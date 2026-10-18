@@ -1,274 +1,128 @@
-"use client";
-
-import { useRef, useState, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { useReducer, useRef, useEffect } from "react";
-import NavMenu from "../components/NavMenu";
-import { copy } from "./copy/en";
-import { getHealth } from "../lib/api/health";
-import { env } from "../lib/config/env";
-import { extractKnownFields, safeJsonStringify } from "../lib/format/safeJson";
-import HealthStatusSkeleton from "../components/HealthStatusSkeleton";
-import {
-  healthReducer,
-  initialHealthState,
-  normalizeHealthResult,
-  classifyFailure,
-  STATUS,
-  FAILURE_REASON,
-} from "../lib/health/healthState";
+import LiveStats from "@/components/LiveStats";
+import ContractCard from "@/components/ContractCard";
+import { API_DOCS_URL, EXPLORER_URL } from "@/lib/config";
 
-const API_URL = env.apiUrl;
+const STEPS = [
+  { t: "SME submits an invoice", d: "Upload an unpaid B2B invoice with amount, debtor and due date. LiquiFact lists it on the marketplace." },
+  { t: "Investors fund it", d: "Investors browse open invoices and contribute stablecoins. Funds go straight into a Soroban escrow contract." },
+  { t: "SME gets paid today", d: "Once the funding target is reached the SME withdraws liquidity instead of waiting 30–90 days." },
+  { t: "Settlement pays investors", d: "When the debtor pays, the escrow settles and investors claim principal plus the agreed yield." },
+];
 
-/**
- * Exhaustive allowlist of status values returned by getHealth.
- *
- * Any status value NOT in this set is treated as 'unreachable' before it is
- * stored in state or rendered. This prevents attacker-controlled status strings
- * from leaking into the aria-live region, badge label, or structured summary.
- *
- * @type {ReadonlySet<string>}
- */
-const STATUS_ALLOWLIST = Object.freeze(new Set(["connected", "degraded", "unreachable"]));
+const FEATURES = [
+  { i: "⛓", t: "On-chain escrow", d: "A Soroban smart contract holds every investor contribution, with explicit states for open, funded and settled." },
+  { i: "⚡", t: "Fast and low-cost", d: "Stellar settles in seconds for fractions of a cent, so small invoices are economical to finance." },
+  { i: "🛡", t: "Built-in safeguards", d: "Legal holds, allowlists, investor caps, funding deadlines and maturity locks are enforced by the contract." },
+  { i: "📈", t: "Transparent yield", d: "Yield is set in basis points per invoice and visible before you commit — no hidden spreads." },
+  { i: "🌍", t: "Global by default", d: "Any SME with a Stellar wallet can raise against receivables; any investor can participate." },
+  { i: "🧩", t: "Open API", d: "A documented REST API powers the app and lets partners integrate invoice origination." },
+];
 
-/**
- * Maximum character length for health.message rendered in the aria-live region.
- * Caps an unusually long server-controlled string to prevent layout abuse.
- */
-const MESSAGE_MAX_LEN = 300;
-
-/**
- * Maximum character length for individual field values in the structured summary.
- * Each value is rendered via truncateString so the DOM cannot be flooded with
- * a giant server-supplied string.
- */
-const FIELD_VALUE_MAX_LEN = 200;
-
-/**
- * Normalises a raw status value from getHealth to one of the three known states.
- * Any unrecognised value maps to "unreachable" — the safest, most visible fallback.
- *
- * ## Why normalise here rather than in getStatusConfig?
- * Normalising at the point of state storage (inside checkApi) means that
- * `health.status` in component state is always a member of STATUS_ALLOWLIST.
- * Downstream consumers — badge, aria-live region, structured summary — never
- * see an attacker-controlled string, so there is a single enforcement point
- * rather than defensive checks scattered across the render tree.
- *
- * @param {unknown} status - Raw status from the API response.
- * @returns {"connected" | "degraded" | "unreachable"}
- */
-export function normalizeStatus(status) {
-  if (typeof status === "string" && STATUS_ALLOWLIST.has(status)) {
-    return status;
-  }
-  return "unreachable";
-}
-
-// Status mapping to visual states.
-// Maps normalised getHealth return values to badge styles and labels.
-// All inputs are guaranteed to be in STATUS_ALLOWLIST at this point.
-const getStatusConfig = (status) => {
-  switch (status) {
-    case "connected":
-      return {
-        label: copy.home.healthStatus.connected,
-        badgeClass: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
-        icon: "✓",
-      };
-    case "degraded":
-      return {
-        label: copy.home.healthStatus.degraded,
-        badgeClass: "bg-amber-500/10 text-amber-400 border-amber-500/20",
-        icon: "⚠",
-      };
-    case "unreachable":
-    default:
-      return {
-        label: copy.home.healthStatus.unreachable,
-        badgeClass: "bg-red-500/10 text-red-400 border-red-500/20",
-        icon: "✕",
-      };
-  }
-};
-
-const TERMINAL_STATUSES = new Set([STATUS.CONNECTED, STATUS.DEGRADED, STATUS.UNREACHABLE]);
-
-/**
- * State invariants (see lib/health/healthState.js for the full list):
- *  - Only one health request is in flight at a time (synchronous ref guard + reducer guard).
- *  - A result is applied only if it belongs to the current request (requestId match).
- *  - Results are normalized, so `health.status` is always a known status and
- *    `health.message` is always a string.
- *  - A thrown error always ends in "unreachable"; it never leaves a stale result on screen.
- *  - No state updates after unmount; the in-flight request is aborted on unmount.
- */
 export default function Home() {
-  const [state, dispatch] = useReducer(healthReducer, initialHealthState);
-  const abortRef = useRef(null);
-  const inFlightRef = useRef(false);
-  const mountedRef = useRef(true);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-      abortRef.current?.abort();
-      abortRef.current = null;
-    };
-  }, []);
-
-  const loading = state.status === STATUS.LOADING;
-
-  // Same shape the render code always used: { status, message, details?, ... }
-  const health = TERMINAL_STATUSES.has(state.status)
-    ? { message: "", ...(state.payload || {}), status: state.status }
-    : null;
-
-  const checkApi = async () => {
-    // Synchronous guard: two clicks in the same tick cannot start two requests.
-    if (inFlightRef.current) return;
-    inFlightRef.current = true;
-
-    // Matches the id the reducer assigns on START (state.requestId + 1).
-    const requestId = state.requestId + 1;
-    const controller = new AbortController();
-    abortRef.current = controller;
-    dispatch({ type: "START" });
-
-    const send = (action) => {
-      if (mountedRef.current && !controller.signal.aborted) {
-        dispatch({ ...action, requestId });
-      }
-    };
-
-    try {
-      const result = await getHealth(API_URL, { signal: controller.signal });
-      const payload = normalizeHealthResult(result);
-
-      if (payload.status === STATUS.CONNECTED) {
-        send({ type: "SUCCESS", payload });
-      } else if (payload.status === STATUS.DEGRADED) {
-        send({ type: "DEGRADED", payload });
-      } else {
-        send({ type: "FAILURE", reason: FAILURE_REASON.NETWORK, payload });
-      }
-    } catch (err) {
-      if (err?.name === "AbortError") return; // unmount abort: nothing to render
-      // Never leave a stale result or an endless spinner; store a safe code only.
-      send({ type: "FAILURE", reason: classifyFailure(err) });
-    } finally {
-      inFlightRef.current = false;
-      if (abortRef.current === controller) abortRef.current = null;
-    }
-  }, [loading]);
-
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
-      {/* Shared site header for the home page and the rest of the app. */}
-      <NavMenu />
-
-      <main id="main-content" className="max-w-4xl mx-auto px-6 py-16">
-        <h1 className="text-4xl font-bold tracking-tight mb-4">{copy.home.heroTitle}</h1>
-        <p className="text-slate-400 text-lg mb-12 max-w-2xl">{copy.home.heroSub}</p>
-
-        <div className="grid gap-6 sm:grid-cols-2 mb-12">
-          <Link
-            href="/invoices"
-            aria-label={copy.home.boxBusinessAriaLabel}
-            className="block rounded-xl border border-slate-700 bg-slate-900/50 p-6 hover:border-cyan-500/50 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400"
-          >
-            <h2 className="text-lg font-semibold text-cyan-400 mb-2">
-              {copy.home.boxBusinessTitle}
-            </h2>
-            <p className="text-slate-400 text-sm">{copy.home.boxBusinessSub}</p>
-          </Link>
-          <Link
-            href="/invest"
-            aria-label={copy.home.boxInvestAriaLabel}
-            className="block rounded-xl border border-slate-700 bg-slate-900/50 p-6 hover:border-cyan-500/50 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400"
-          >
-            <h2 className="text-lg font-semibold text-cyan-400 mb-2">{copy.home.boxInvestTitle}</h2>
-            <p className="text-slate-400 text-sm">{copy.home.boxInvestSub}</p>
-          </Link>
-        </div>
-
-        <div className="rounded-xl border border-slate-800 bg-slate-900/30 p-6">
-          <p className="text-sm font-medium text-slate-400 mb-2">{copy.home.apiStatus}</p>
-          <button
-            type="button"
-            onClick={checkApi}
-            disabled={loading}
-            aria-label={copy.home.checkApiHealth}
-            className="rounded-lg cursor-pointer bg-slate-800 px-4 py-3 text-sm font-medium hover:bg-slate-700 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400"
-          >
-            {loading ? copy.home.checking : copy.home.checkApiHealth}
-          </button>
-
-          {loading && <HealthStatusSkeleton />}
-
-          {!loading && error && (
-            <div
-              role="alert"
-              className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300"
-            >
-              {copy.home.healthStatus.unreachable}
+    <>
+      <section className="hero">
+        <div className="container hero-grid">
+          <div>
+            <div className="pill"><span className="dot" /> Live on Stellar testnet</div>
+            <h1>
+              Turn unpaid invoices into <span>instant liquidity</span>
+            </h1>
+            <p className="lead">
+              LiquiFact is an invoice financing network on Stellar. SMEs tokenize receivables and get paid today;
+              investors fund them through a transparent Soroban escrow and earn yield backed by real trade.
+            </p>
+            <div className="btn-row" style={{ marginTop: 28 }}>
+              <Link href="/marketplace" className="btn btn-primary">Explore marketplace</Link>
+              <Link href="/submit" className="btn btn-light">Submit an invoice</Link>
+              <Link href="/docs" className="btn btn-light">Read the docs</Link>
             </div>
-          )}
+          </div>
+          <div className="glass" aria-label="Example invoice">
+            <div className="eyebrow" style={{ color: "#a5b4fc" }}>Example listing</div>
+            <h3 style={{ margin: "6px 0 14px" }}>INV_0002 · Northwind Textiles</h3>
+            <div className="row"><span className="k">Face value</span><span>25,000 USDC</span></div>
+            <div className="row"><span className="k">Investor yield</span><span>6.50%</span></div>
+            <div className="row"><span className="k">Due</span><span>Dec 30, 2026</span></div>
+            <div className="row"><span className="k">Funded</span><span>72%</span></div>
+            <div className="progress" style={{ marginTop: 14, background: "rgba(255,255,255,0.12)" }}><span style={{ width: "72%" }} /></div>
+          </div>
+        </div>
+      </section>
 
-          {!loading && health && (
-            <div className="mt-4">
-              {/* Structured health status card with color-coded badge */}
-              {/* Status changes are announced politely via aria-live="polite" */}
-              <div
-                role="status"
-                aria-live="polite"
-                className="rounded-lg border border-slate-700 bg-slate-800/50 p-4"
-              >
-                <div className="flex items-center gap-3 mb-3">
-                  {/* Color-coded badge with icon and text — not color-only for accessibility.
-                      health.status is always a STATUS_ALLOWLIST member at this point. */}
-                  <span
-                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border ${getStatusConfig(health.status).badgeClass}`}
-                  >
-                    <span aria-hidden="true">{getStatusConfig(health.status).icon}</span>
-                    <span>{getStatusConfig(health.status).label}</span>
-                  </span>
-                </div>
+      <section className="section-sm">
+        <div className="container">
+          <LiveStats />
+        </div>
+      </section>
 
-                {/* Structured summary for recognised fields.
-                    Field values are capped at FIELD_VALUE_MAX_LEN characters to prevent
-                    an oversized server-supplied string from flooding the DOM. */}
-                <div className="text-xs text-slate-300 space-y-1 mb-3">
-                  {Object.entries(extractKnownFields(health.details || health)).map(
-                    ([key, value]) => (
-                      <div key={key}>
-                        <span className="text-slate-500 font-semibold">{key}:</span>{" "}
-                        <span className="text-slate-300">
-                          {truncateString(String(value), FIELD_VALUE_MAX_LEN)}
-                        </span>
-                      </div>
-                    )
-                  )}
-                </div>
-
-                {/* health.message is already capped at MESSAGE_MAX_LEN by sanitizeHealthResult. */}
-                <p className="text-sm text-slate-300">{health.message}</p>
-
-                {/* Raw response — always shown behind an expandable section */}
-                <details className="mt-3">
-                  <summary className="cursor-pointer text-sm text-slate-400 hover:text-slate-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400">
-                    {copy.home.healthStatus.rawResponse}
-                  </summary>
-                  <pre className="mt-2 text-xs text-slate-400 bg-slate-900/50 p-3 rounded overflow-x-auto">
-                    {safeJsonStringify(health.details ?? health)}
-                  </pre>
-                </details>
+      <section className="section" id="how-it-works">
+        <div className="container">
+          <div className="center" style={{ marginBottom: 40 }}>
+            <div className="eyebrow">How it works</div>
+            <h2>From invoice to cash in four steps</h2>
+            <p className="lead">Every step is backed by the escrow contract, so funds only move when the rules allow it.</p>
+          </div>
+          <div className="grid grid-4">
+            {STEPS.map((s, i) => (
+              <div className="card" key={s.t}>
+                <div className="step-num">STEP {i + 1}</div>
+                <h3>{s.t}</h3>
+                <p className="muted" style={{ margin: 0 }}>{s.d}</p>
               </div>
-            </div>
-          )}
+            ))}
+          </div>
         </div>
-      </main>
-    </div>
+      </section>
+
+      <section className="section" style={{ paddingTop: 0 }}>
+        <div className="container">
+          <div className="center" style={{ marginBottom: 40 }}>
+            <div className="eyebrow">Why LiquiFact</div>
+            <h2>Working capital without the waiting</h2>
+          </div>
+          <div className="grid grid-3">
+            {FEATURES.map((f) => (
+              <div className="card" key={f.t}>
+                <div className="icon" aria-hidden="true">{f.i}</div>
+                <h3>{f.t}</h3>
+                <p className="muted" style={{ margin: 0 }}>{f.d}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="section" style={{ paddingTop: 0 }}>
+        <div className="container grid grid-2">
+          <ContractCard />
+          <div className="card">
+            <div className="eyebrow">Developers</div>
+            <h3 style={{ marginTop: 6 }}>Build on the LiquiFact API</h3>
+            <p className="muted">List invoices, submit new ones, record funding and read live escrow state from Soroban — all documented with OpenAPI.</p>
+            <div className="btn-row">
+              <a className="btn btn-primary" href={API_DOCS_URL}>Open API docs ↗</a>
+              <Link className="btn btn-ghost" href="/docs#architecture">Architecture</Link>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="section" style={{ paddingTop: 0 }}>
+        <div className="container">
+          <div className="cta">
+            <div>
+              <h2 style={{ margin: "0 0 6px" }}>Ready to see it in action?</h2>
+              <p>Browse live invoices or inspect the escrow contract on <a href={EXPLORER_URL} style={{ color: "#67e8f9" }}>stellar.expert</a>.</p>
+            </div>
+            <div className="btn-row">
+              <Link href="/marketplace" className="btn btn-primary">Go to marketplace</Link>
+              <Link href="/docs" className="btn btn-light">Docs</Link>
+            </div>
+          </div>
+        </div>
+      </section>
+    </>
   );
 }

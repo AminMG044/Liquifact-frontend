@@ -1,11 +1,5 @@
-const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
-const routes = ["/", "/invoices", "/invest", "/settings"];
+const BASE = process.env.NEXT_PUBLIC_SITE_URL || "https://liquifact-frontend.vercel.app";
 
 export default function sitemap() {
-  return routes.map((path) => ({
-    url: `${baseUrl}${path}`,
-    lastModified: new Date(),
-    changeFrequency: "daily",
-    priority: 0.8,
-  }));
+  return ["", "/marketplace", "/submit", "/docs"].map((p) => ({ url: `${BASE}${p}`, lastModified: new Date() }));
 }
