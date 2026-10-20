@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
+import { WalletButton } from "@/components/wallet/WalletButton";
 
 const LINKS = [
   { href: "/", label: "Home" },
@@ -43,6 +44,9 @@ export default function SiteHeader() {
               {l.label}
             </Link>
           ))}
+          <div className="wallet">
+            <WalletButton />
+          </div>
         </nav>
       </div>
     </header>
