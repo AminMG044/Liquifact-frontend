@@ -195,7 +195,7 @@ The explorer link is built from `EXPLORER_ACCOUNT_URL` in `lib/config.js`
 |---|---|---|
 | `tests/wallet-state.test.mjs` | `node:test` | Every reducer transition. |
 | `tests/wallet-adapter.test.mjs` | `node:test` | The adapter: Freighter error payloads become typed `WalletError`s. |
-| `tests/ui/wallet-button.test.jsx` | Vitest + Testing Library | The button in every state, the menu actions, the session restore. |
+| `tests/ui/wallet-button.ui.test.jsx` | Vitest + Testing Library | The button in every state, the menu actions, the session restore. |
 
 ```bash
 npm test          # node:test — the pure logic
@@ -204,3 +204,14 @@ npm run test:ui   # vitest — the components
 
 The adapter takes its Freighter API through `setFreighterApi()`, so the tests
 never need the real extension and never touch `window`.
+
+### Integration with current main
+
+Availability uses the asynchronous Freighter SDK `isConnected()` result rather
+than requiring a `window.freighter` global. The adapter also recognizes the
+SEP-43 rejection code `-4`. Existing onboarding helper exports remain available;
+`hasFreighter()` is now awaited by the checklist and shares the SDK detector.
+Connection/restore attempts are invalidated by disconnect or unmount, and the
+watcher updates context on network-only changes as well as account changes.
+The current theme toggle, onboarding route, test setup, and pinned testing-tool
+versions are retained. All UI tests use the existing `vitest.config.mjs`.

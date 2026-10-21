@@ -14,7 +14,6 @@ import {
   getAddress as readAddress,
   getNetwork as readNetwork,
   isAllowed as readIsAllowed,
-  isAvailable,
   watch as watchWallet,
   WALLET_ERROR_CODE,
   WalletError,
@@ -70,6 +69,8 @@ function clearSessionFlag() {
 export function WalletProvider({ children }) {
   const [state, dispatch] = useReducer(walletReducer, INITIAL_WALLET_STATE);
   const unsubscribeRef = useRef(null);
+  const generationRef = useRef(0);
+  useEffect(() => () => { generationRef.current += 1; }, []);
 
   const stopWatching = useCallback(() => {
     if (!unsubscribeRef.current) return;
@@ -82,16 +83,14 @@ export function WalletProvider({ children }) {
   }, []);
 
   const connect = useCallback(async () => {
+    const attempt = ++generationRef.current;
     dispatch({ type: WALLET_ACTIONS.CONNECT });
-
-    if (!isAvailable()) {
-      dispatch({ type: WALLET_ACTIONS.NO_WALLET });
-      return { status: WALLET_STATUS.NO_WALLET };
-    }
 
     try {
       const address = await requestAccess();
+      if (attempt !== generationRef.current) return { status: WALLET_STATUS.DISCONNECTED };
       const network = await readNetwork();
+      if (attempt !== generationRef.current) return { status: WALLET_STATUS.DISCONNECTED };
       dispatch({
         type: WALLET_ACTIONS.CONNECTED,
         address,
@@ -101,6 +100,7 @@ export function WalletProvider({ children }) {
       writeSessionFlag();
       return { status: WALLET_STATUS.CONNECTED, address };
     } catch (error) {
+      if (attempt !== generationRef.current) return { status: WALLET_STATUS.DISCONNECTED };
       const code = error instanceof WalletError ? error.code : WALLET_ERROR_CODE.UNKNOWN;
       const message =
         (error && error.message) || "The wallet connection failed.";
@@ -116,6 +116,7 @@ export function WalletProvider({ children }) {
   }, []);
 
   const disconnect = useCallback(() => {
+    generationRef.current += 1;
     stopWatching();
     clearSessionFlag();
     dispatch({ type: WALLET_ACTIONS.DISCONNECT });
@@ -129,14 +130,16 @@ export function WalletProvider({ children }) {
     if (!readSessionFlag()) return undefined;
 
     let cancelled = false;
+    const attempt = generationRef.current;
+    const stale = () => cancelled || attempt !== generationRef.current;
     void (async () => {
       try {
         const allowed = await readIsAllowed();
-        if (cancelled || !allowed) return;
+        if (stale() || !allowed) return;
         const address = await readAddress();
-        if (cancelled || !address) return;
+        if (stale() || !address) return;
         const network = await readNetwork();
-        if (cancelled) return;
+        if (stale()) return;
         dispatch({
           type: WALLET_ACTIONS.CONNECTED,
           address,
@@ -145,7 +148,7 @@ export function WalletProvider({ children }) {
         });
       } catch {
         // The extension is gone or no longer trusts the site: stay disconnected.
-        clearSessionFlag();
+        if (!stale()) clearSessionFlag();
       }
     })();
 
@@ -172,6 +175,10 @@ export function WalletProvider({ children }) {
               errorCode: change.error.code,
             });
             return;
+          }
+          if (change.networkPassphrase && change.networkPassphrase !== state.networkPassphrase) {
+            dispatch({ type: WALLET_ACTIONS.NETWORK_CHANGED, network: change.network,
+              networkPassphrase: change.networkPassphrase });
           }
           if (change.address && change.address !== state.address) {
             dispatch({
@@ -203,7 +210,7 @@ export function WalletProvider({ children }) {
         }
       }
     };
-  }, [state.status, state.address]);
+  }, [state.status, state.address, state.networkPassphrase]);
 
   const value = useMemo(
     () => ({

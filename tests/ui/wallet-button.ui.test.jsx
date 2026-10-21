@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { WalletProvider } from "@/components/wallet/WalletProvider";
+import { WalletProvider, useWallet } from "@/components/wallet/WalletProvider";
 import { WalletButton } from "@/components/wallet/WalletButton";
 import { resetFreighterApi, setFreighterApi } from "@/lib/stellar/freighter";
 
@@ -27,6 +27,7 @@ function createApi(overrides = {}) {
   }
 
   return {
+    isConnected: vi.fn(async () => ({ isConnected: true })),
     requestAccess: vi.fn(async () => ({ address: ADDRESS })),
     getAddress: vi.fn(async () => ({ address: ADDRESS })),
     isAllowed: vi.fn(async () => ({ isAllowed: true })),
@@ -55,7 +56,6 @@ function renderButton() {
 
 beforeEach(() => {
   window.localStorage.clear();
-  window.freighter = {};
 });
 
 afterEach(() => {
@@ -95,6 +95,7 @@ describe("WalletButton", () => {
     expect(button.hasAttribute("disabled")).toBe(true);
     expect(button.getAttribute("aria-busy")).toBe("true");
 
+    await waitFor(() => expect(release).toBeTypeOf("function"));
     release({ address: ADDRESS });
   });
 
@@ -162,7 +163,7 @@ describe("WalletButton", () => {
 
   it("links to the Freighter download when no extension is installed", async () => {
     delete window.freighter;
-    setFreighterApi(createApi());
+    setFreighterApi(createApi({ isConnected: vi.fn(async () => ({ isConnected: false })) }));
     renderButton();
 
     await userEvent.click(screen.getByRole("button", { name: /connect wallet/i }));
@@ -210,5 +211,58 @@ describe("WalletButton", () => {
 
     expect(api.isAllowed).not.toHaveBeenCalled();
     expect(api.requestAccess).not.toHaveBeenCalled();
+  });
+});
+
+function SessionProbe() {
+  const { status, networkPassphrase, disconnect } = useWallet();
+  return <>
+    <output data-testid="session-state">{status}</output>
+    <output data-testid="session-network">{networkPassphrase}</output>
+    <button onClick={disconnect}>Cancel session</button>
+  </>;
+}
+
+describe("wallet session synchronization", () => {
+  it("does not revive a connection after disconnecting during the access prompt", async () => {
+    let release;
+    setFreighterApi(createApi({ requestAccess: vi.fn(() => new Promise(resolve => { release = resolve; })) }));
+    render(<WalletProvider><WalletButton /><SessionProbe /></WalletProvider>);
+    await userEvent.click(screen.getByRole("button", { name: /connect wallet/i }));
+    await waitFor(() => expect(release).toBeTypeOf("function"));
+    await userEvent.click(screen.getByRole("button", { name: "Cancel session" }));
+    await act(async () => { release({ address: ADDRESS }); });
+    expect(screen.getByTestId("session-state").textContent).toBe("disconnected");
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+  });
+
+  it("does not restore a session that was disconnected while authorization was loading", async () => {
+    let release;
+    localStorage.setItem(STORAGE_KEY, "1");
+    const api = createApi({ isAllowed: vi.fn(() => new Promise(resolve => { release = resolve; })) });
+    setFreighterApi(api);
+    render(<WalletProvider><WalletButton /><SessionProbe /></WalletProvider>);
+    await waitFor(() => expect(release).toBeTypeOf("function"));
+    await userEvent.click(screen.getByRole("button", { name: "Cancel session" }));
+    await act(async () => { release({ isAllowed: true }); });
+    expect(screen.getByTestId("session-state").textContent).toBe("disconnected");
+    expect(api.getAddress).not.toHaveBeenCalled();
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+  });
+
+  it("syncs network-only changes without requiring an account switch", async () => {
+    const api = createApi();
+    setFreighterApi(api);
+    render(<WalletProvider><WalletButton /><SessionProbe /></WalletProvider>);
+    await userEvent.click(screen.getByRole("button", { name: /connect wallet/i }));
+    await screen.findByRole("button", { name: /GABCDE/ });
+    await waitFor(() => expect(api.watchers.length).toBeGreaterThan(0));
+    await act(async () => {
+      api.watchers[0].cb({ address: ADDRESS, network: "mainnet",
+        networkPassphrase: "Public Global Stellar Network ; September 2015" });
+    });
+    expect(screen.getByTestId("session-network").textContent).toBe(
+      "Public Global Stellar Network ; September 2015",
+    );
   });
 });

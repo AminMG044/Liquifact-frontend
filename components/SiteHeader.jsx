@@ -4,11 +4,13 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 import { WalletButton } from "@/components/wallet/WalletButton";
+import ThemeToggle from "@/components/ThemeToggle";
 
 const LINKS = [
   { href: "/", label: "Home" },
   { href: "/marketplace", label: "Marketplace" },
   { href: "/submit", label: "Submit invoice" },
+  { href: "/get-started", label: "Get started" },
   { href: "/docs", label: "Docs" },
 ];
 
@@ -47,6 +49,7 @@ export default function SiteHeader() {
           <div className="wallet">
             <WalletButton />
           </div>
+          <ThemeToggle />
         </nav>
       </div>
     </header>

@@ -7,6 +7,7 @@ import {
   getAddress,
   getNetwork,
   isAllowed,
+  isAvailable,
   resetFreighterApi,
   setFreighterApi,
   signTransaction,
@@ -17,6 +18,7 @@ const ADDRESS = "GABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOP";
 
 function fakeApi(overrides = {}) {
   return {
+    isConnected: async () => ({ isConnected: true }),
     requestAccess: async () => ({ address: ADDRESS }),
     getAddress: async () => ({ address: ADDRESS }),
     isAllowed: async () => ({ isAllowed: true }),
@@ -83,9 +85,7 @@ test("an unknown error code becomes an UNKNOWN WalletError", async () => {
 test("a missing extension becomes a NO_WALLET WalletError", async () => {
   setFreighterApi(
     fakeApi({
-      requestAccess: async () => {
-        throw new TypeError("Cannot read properties of undefined");
-      },
+      isConnected: async () => ({ isConnected: false }),
     }),
   );
 
@@ -194,5 +194,16 @@ test("watch turns an extension error into a WalletError", async () => {
   assert.equal(changes.length, 1);
   assert.ok(changes[0].error instanceof WalletError);
   assert.equal(changes[0].error.code, WALLET_ERROR_CODE.USER_REJECTED);
+  resetFreighterApi();
+});
+
+test("availability uses isConnected even without an injected window global", async () => {
+  setFreighterApi(fakeApi());
+  assert.equal(await isAvailable(), true);
+  resetFreighterApi();
+});
+test("the Freighter SEP-43 rejection code is normalized", async () => {
+  setFreighterApi(fakeApi({ requestAccess: async () => ({ error: { code: -4, message: "Declined" } }) }));
+  await assert.rejects(connect(), error => error.code === WALLET_ERROR_CODE.USER_REJECTED);
   resetFreighterApi();
 });
