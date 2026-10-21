@@ -50,11 +50,70 @@
           "run": "npm run build"
         },
         {
+          "name": "Install browser tools",
+          "if": "always()",
+          "run": "npm install --prefix /tmp/browser-tools --ignore-scripts --no-package-lock playwright@1.56.1\n/tmp/browser-tools/node_modules/.bin/playwright install --with-deps chromium"
+        },
+        {
+          "name": "After screenshots and hydration/375px checks",
+          "if": "always()",
+          "run": "node .review/capture.mjs after"
+        },
+        {
           "uses": "actions/upload-artifact@v4",
           "if": "always()",
           "with": {
             "name": "freighter-1362-lockfile",
-            "path": "package-lock.json",
+            "path": "package-lock.json\nscreenshots/",
+            "retention-days": 7
+          }
+        }
+      ]
+    },
+    "before": {
+      "runs-on": "ubuntu-latest",
+      "timeout-minutes": 20,
+      "steps": [
+        {
+          "uses": "actions/checkout@v4",
+          "with": {
+            "ref": "879ec344f0811026cb8e91487a2fb2ee46e50c01"
+          }
+        },
+        {
+          "uses": "actions/setup-node@v4",
+          "with": {
+            "node-version": "20"
+          }
+        },
+        {
+          "run": "npm ci --ignore-scripts"
+        },
+        {
+          "run": "npm run build"
+        },
+        {
+          "name": "Read capture helper from validation branch",
+          "uses": "actions/checkout@v4",
+          "with": {
+            "ref": "${{ github.sha }}",
+            "path": "review-helper",
+            "sparse-checkout": ".review",
+            "sparse-checkout-cone-mode": false
+          }
+        },
+        {
+          "run": "npm install --prefix /tmp/browser-tools --ignore-scripts --no-package-lock playwright@1.56.1\n/tmp/browser-tools/node_modules/.bin/playwright install --with-deps chromium"
+        },
+        {
+          "run": "node review-helper/.review/capture.mjs before"
+        },
+        {
+          "uses": "actions/upload-artifact@v4",
+          "if": "always()",
+          "with": {
+            "name": "freighter-1362-before",
+            "path": "screenshots/",
             "retention-days": 7
           }
         }

@@ -195,7 +195,7 @@ The explorer link is built from `EXPLORER_ACCOUNT_URL` in `lib/config.js`
 |---|---|---|
 | `tests/wallet-state.test.mjs` | `node:test` | Every reducer transition. |
 | `tests/wallet-adapter.test.mjs` | `node:test` | The adapter: Freighter error payloads become typed `WalletError`s. |
-| `tests/ui/wallet-button.test.jsx` | Vitest + Testing Library | The button in every state, the menu actions, the session restore. |
+| `tests/ui/wallet-button.ui.test.jsx` | Vitest + Testing Library | The button in every state, the menu actions, the session restore. |
 
 ```bash
 npm test          # node:test — the pure logic
