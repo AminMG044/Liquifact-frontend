@@ -1,0 +1,64 @@
+{
+  "name": "Validate Freighter wallet integration",
+  "on": {
+    "push": {
+      "branches": [
+        "validate/1362-current-main"
+      ]
+    }
+  },
+  "permissions": {
+    "contents": "read"
+  },
+  "jobs": {
+    "wallet": {
+      "runs-on": "ubuntu-latest",
+      "timeout-minutes": 25,
+      "steps": [
+        {
+          "uses": "actions/checkout@v4"
+        },
+        {
+          "name": "Malware guard before installing",
+          "run": "bash .github/scripts/malware-scan.sh"
+        },
+        {
+          "uses": "actions/setup-node@v4",
+          "with": {
+            "node-version": "20"
+          }
+        },
+        {
+          "name": "Regenerate lockfile with pinned Freighter dependency",
+          "run": "npm install --package-lock-only --ignore-scripts"
+        },
+        {
+          "run": "npm ci --ignore-scripts"
+        },
+        {
+          "name": "All node tests",
+          "run": "npm test"
+        },
+        {
+          "name": "All component tests",
+          "if": "always()",
+          "run": "npm run test:ui"
+        },
+        {
+          "name": "Production build",
+          "if": "always()",
+          "run": "npm run build"
+        },
+        {
+          "uses": "actions/upload-artifact@v4",
+          "if": "always()",
+          "with": {
+            "name": "freighter-1362-lockfile",
+            "path": "package-lock.json",
+            "retention-days": 7
+          }
+        }
+      ]
+    }
+  }
+}
