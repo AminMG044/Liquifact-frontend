@@ -1,0 +1,54 @@
+{
+  "name": "Validate security repair 1447",
+  "on": {
+    "push": {
+      "branches": [
+        "validate/security-repair-1447"
+      ]
+    }
+  },
+  "permissions": {
+    "contents": "read"
+  },
+  "jobs": {
+    "validation": {
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 25,
+      "steps": [
+        {
+          "uses": "actions/checkout@v4",
+          "with": {
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Malware guard",
+          "run": "bash .github/scripts/malware-scan.sh"
+        },
+        {
+          "uses": "actions/setup-node@v4",
+          "with": {
+            "node-version": "22"
+          }
+        },
+        {
+          "run": "npm ci --ignore-scripts"
+        },
+        {
+          "name": "Full Node tests",
+          "run": "npm test"
+        },
+        {
+          "name": "Full component tests",
+          "if": "always()",
+          "run": "npm run test:ui"
+        },
+        {
+          "name": "Production build",
+          "if": "always()",
+          "run": "npm run build"
+        }
+      ]
+    }
+  }
+}
