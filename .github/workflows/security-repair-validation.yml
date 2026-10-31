@@ -23,7 +23,8 @@
         },
         {
           "name": "Malware guard",
-          "run": "bash .github/scripts/malware-scan.sh"
+          "run": "bash .github/scripts/malware-scan.sh",
+          "id": "scan"
         },
         {
           "uses": "actions/setup-node@v4",
@@ -32,7 +33,8 @@
           }
         },
         {
-          "run": "npm ci --ignore-scripts"
+          "run": "npm ci --ignore-scripts",
+          "id": "deps"
         },
         {
           "name": "Full Node tests",
@@ -40,12 +42,12 @@
         },
         {
           "name": "Full component tests",
-          "if": "always()",
+          "if": "always() && steps.scan.outcome == 'success' && steps.deps.outcome == 'success'",
           "run": "npm run test:ui"
         },
         {
           "name": "Production build",
-          "if": "always()",
+          "if": "always() && steps.scan.outcome == 'success' && steps.deps.outcome == 'success'",
           "run": "npm run build"
         }
       ]
